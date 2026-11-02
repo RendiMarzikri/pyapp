@@ -1,0 +1,6 @@
+com.example.simpleapp
+id button
+id text
+layout activity_main
+string app_name
+style Theme_SimpleApp
