@@ -3,10 +3,12 @@ package io.qzz.rendimarzikri;
 import android.os.Bundle;
 import android.graphics.Color;
 import android.text.Editable;
-import android.text.TextWatcher;
 import android.text.Spanned;
+import android.text.TextWatcher;
 import android.text.style.ForegroundColorSpan;
 import android.util.Log;
+import android.app.AlertDialog;
+import android.text.InputType;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -16,6 +18,7 @@ import com.chaquo.python.PyObject;
 import com.chaquo.python.android.AndroidPlatform;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CountDownLatch;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -39,6 +42,67 @@ public class MainActivity extends AppCompatActivity {
 
     private static final Pattern COMMENTS = Pattern.compile("#[^\\n]*");
     private static final Pattern NUMBERS = Pattern.compile("\\b\\d+(?:\\.\\d+)?\\b");
+
+    public static class PythonIO {
+
+        private final MainActivity activity;
+
+        public PythonIO(MainActivity activity) {
+            this.activity = activity;
+        }
+
+        public void onOutput(String text) {
+            if (text == null || text.isEmpty()) return;
+
+            activity.runOnUiThread(() -> {
+                activity.outputConsole.append(text);
+            });
+        }
+
+        public String readLine() {
+            CountDownLatch latch = new CountDownLatch(1);
+            String[] answer = new String[1];
+
+            activity.runOnUiThread(() -> {
+                EditText input = new EditText(activity);
+                input.setSingleLine(true);
+                input.setInputType(InputType.TYPE_CLASS_TEXT);
+                input.setHint("Enter Python input");
+
+                AlertDialog dialog = new AlertDialog.Builder(activity)
+                    .setTitle("Python Input")
+                    .setMessage("Program meminta masukan:")
+                    .setView(input)
+                    .setPositiveButton("OK", (d, w) -> {
+                        answer[0] = input.getText().toString();
+                        activity.outputConsole.append(answer[0] + "\n");
+                        latch.countDown();
+                    })
+                    .setNegativeButton("Cancel", (d, w) -> {
+                        answer[0] = null;
+                        latch.countDown();
+                    })
+                    .create();
+
+                dialog.setOnCancelListener(d -> {
+                    answer[0] = null;
+                    latch.countDown();
+                });
+
+                dialog.show();
+                input.requestFocus();
+            });
+
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+
+            return answer[0];
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -122,7 +186,7 @@ public class MainActivity extends AppCompatActivity {
         outputConsole.setText("");
 
         executor.execute(() -> {
-            String result;
+            boolean hasError = false;
 
             try {
                 if (pythonInitError != null) {
@@ -137,44 +201,74 @@ public class MainActivity extends AppCompatActivity {
                 PyObject builtins = py.getBuiltins();
                 PyObject globals = builtins.callAttr("dict");
 
+                PythonIO io = new PythonIO(this);
+
                 globals.asMap().put(
                     PyObject.fromJava("__user_code__"),
                     PyObject.fromJava(code)
                 );
 
+                globals.asMap().put(
+                    PyObject.fromJava("__callback__"),
+                    PyObject.fromJava(io)
+                );
+
                 String runner =
-                    "import io, contextlib, traceback\n" +
-                    "_output = io.StringIO()\n" +
-                    "_user_globals = {'__name__': '__main__'}\n" +
+                    "import sys, traceback\n" +
+                    "_old_stdout = sys.stdout\n" +
+                    "_old_stderr = sys.stderr\n" +
+                    "_old_stdin = sys.stdin\n" +
+                    "class _Stream:\n" +
+                    "    def write(self, text):\n" +
+                    "        if text:\n" +
+                    "            __callback__.onOutput(text)\n" +
+                    "        return len(text)\n" +
+                    "    def flush(self):\n" +
+                    "        pass\n" +
+                    "class _Input:\n" +
+                    "    def readline(self, *args):\n" +
+                    "        value = __callback__.readLine()\n" +
+                    "        if value is None:\n" +
+                    "            return ''\n" +
+                    "        return value + '\\n'\n" +
+                    "_stream = _Stream()\n" +
+                    "sys.stdout = _stream\n" +
+                    "sys.stderr = _stream\n" +
+                    "sys.stdin = _Input()\n" +
+                    "__status__ = 'ok'\n" +
                     "try:\n" +
-                    "    with contextlib.redirect_stdout(_output), contextlib.redirect_stderr(_output):\n" +
-                    "        exec(compile(__user_code__, '<editor>', 'exec'), _user_globals)\n" +
+                    "    exec(compile(__user_code__, '<editor>', 'exec'), {'__name__': '__main__'})\n" +
                     "except BaseException:\n" +
-                    "    traceback.print_exc(file=_output)\n" +
-                    "__result__ = _output.getvalue()\n";
+                    "    __status__ = 'error'\n" +
+                    "    traceback.print_exc()\n" +
+                    "finally:\n" +
+                    "    sys.stdout = _old_stdout\n" +
+                    "    sys.stderr = _old_stderr\n" +
+                    "    sys.stdin = _old_stdin\n";
 
                 builtins.callAttr("exec", runner, globals);
 
-                PyObject output = globals.asMap().get(
-                    PyObject.fromJava("__result__")
+                PyObject result = globals.asMap().get(
+                    PyObject.fromJava("__status__")
                 );
 
-                result = output == null ? "" : output.toString();
-
-                if (result.isEmpty()) {
-                    result = "Program finished with no output.";
-                }
+                hasError = result != null && result.toString().equals("error");
 
             } catch (Throwable e) {
-                result = "Runtime Error:\n" + Log.getStackTraceString(e);
+                hasError = true;
+                String error = Log.getStackTraceString(e);
+
+                runOnUiThread(() ->
+                    outputConsole.append("\nRuntime Error:\n" + error)
+                );
             }
 
-            final String finalResult = result;
-            final boolean hasError = result.contains("Traceback (most recent call last):");
+            final boolean errorStatus = hasError;
 
             runOnUiThread(() -> {
-                outputConsole.setText(finalResult);
-                statusText.setText(hasError ? "Finished with error." : "Execution finished.");
+                statusText.setText(
+                    errorStatus ? "Finished with error." : "Execution finished."
+                );
                 runButton.setEnabled(true);
             });
         });
