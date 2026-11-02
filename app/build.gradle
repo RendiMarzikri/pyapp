@@ -8,7 +8,7 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId "io.qzz.rendimarzikri"
+        applicationId "io.qzz.rendimarzikri.pyapp"
         minSdk 24
         targetSdk 35
         versionCode 1

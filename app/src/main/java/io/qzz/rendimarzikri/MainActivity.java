@@ -1,4 +1,3 @@
-
 package io.qzz.rendimarzikri;
 
 import android.os.Bundle;
@@ -54,7 +53,7 @@ public class MainActivity extends AppCompatActivity {
         Button clearButton = findViewById(R.id.clearButton);
 
         codeEditor.setText(
-            "nama = \"ZaSilver\"\n" +
+            "nama = \"Rendi Marzikri\"\n" +
             "nilai = [90, 85, 95]\n\n" +
             "print(\"Halo,\", nama)\n" +
             "print(\"Rata-rata:\", sum(nilai) / len(nilai))"
